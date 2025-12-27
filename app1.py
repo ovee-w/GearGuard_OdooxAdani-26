@@ -284,31 +284,115 @@ elif menu == "Equipment":
 elif menu == "Teams":
     st.header("👷 Maintenance Teams")
 
-    team = st.text_input("Team Name")
-    print (team)
-    if st.button("Add Team"):
-        try:
-            cur.execute("INSERT INTO teams (name) VALUES (?)", (team,))
-            conn.commit()
-            st.success("Team Added")
-        except:
-            st.error("Team already exists")
+    # ===============================
+    # ADD TEAM
+    # ===============================
+    with st.form("add_team"):
+        team_name = st.text_input("Team Name")
+
+        if st.form_submit_button("Add Team"):
+            if team_name.strip():
+                try:
+                    cur.execute(
+                        "INSERT INTO teams (name) VALUES (?)",
+                        (team_name.strip(),)
+                    )
+                    conn.commit()
+                    st.success("✅ Team Added")
+                except:
+                    st.error("❌ Team already exists")
+            else:
+                st.warning("Team name cannot be empty")
 
     st.divider()
 
-    name = st.text_input("Technician Name")
-    tech_team = st.text_input("Technician Team")
+    # ===============================
+    # TEAM OVERVIEW WITH COUNTS
+    # ===============================
+    st.subheader("🏷 Team Overview")
 
-    if st.button("Add Technician"):
-        cur.execute(
-            "INSERT INTO technicians (name, team) VALUES (?, ?)",
-            (name, tech_team)
-        )
-        conn.commit()
-        st.success("Technician Added")
+    teams_df = pd.read_sql("SELECT name FROM teams", conn)
 
-    st.subheader("👥 Technicians")
-    st.dataframe(pd.read_sql("SELECT * FROM technicians", conn))
+    if teams_df.empty:
+        st.info("No teams added yet")
+    else:
+        overview = []
+
+        for _, row in teams_df.iterrows():
+            team = row["name"]
+
+            tech_count = cur.execute(
+                "SELECT COUNT(*) FROM technicians WHERE team=?",
+                (team,)
+            ).fetchone()[0]
+
+            open_requests = cur.execute(
+                """
+                SELECT COUNT(*) FROM requests
+                WHERE team=? AND status IN ('New', 'In Progress')
+                """,
+                (team,)
+            ).fetchone()[0]
+
+            overview.append({
+                "Team": team,
+                "Technicians": tech_count,
+                "Open Requests": open_requests
+            })
+
+        overview_df = pd.DataFrame(overview)
+        st.dataframe(overview_df, use_container_width=True)
+
+    st.divider()
+
+    # ===============================
+    # ADD TECHNICIAN
+    # ===============================
+    st.subheader("➕ Add Technician")
+
+    if teams_df.empty:
+        st.warning("Please create a team first")
+    else:
+        with st.form("add_technician"):
+            tech_name = st.text_input("Technician Name")
+            tech_team = st.selectbox("Assign to Team", teams_df["name"].tolist())
+
+            if st.form_submit_button("Add Technician"):
+                if tech_name.strip():
+                    cur.execute(
+                        "INSERT INTO technicians (name, team) VALUES (?, ?)",
+                        (tech_name.strip(), tech_team)
+                    )
+                    conn.commit()
+                    st.success("✅ Technician Added")
+                else:
+                    st.warning("Technician name cannot be empty")
+
+    st.divider()
+
+    # ===============================
+    # TECHNICIANS LIST (TEAM-WISE)
+    # ===============================
+    st.subheader("👥 Technicians by Team")
+
+    tech_df = pd.read_sql("SELECT * FROM technicians", conn)
+
+    if tech_df.empty:
+        st.info("No technicians added yet")
+    else:
+        for team in teams_df["name"]:
+            team_techs = tech_df[tech_df["team"] == team]
+
+            with st.expander(f"👷 {team} ({len(team_techs)} technicians)"):
+                if team_techs.empty:
+                    st.info("No technicians in this team")
+                else:
+                    st.dataframe(team_techs, use_container_width=True)
+
+    st.divider()
+
+
+
 
 # =========================================================
 # CREATE REQUEST
@@ -318,7 +402,7 @@ elif menu == "Create Request":
     st.header("🧾 Create Maintenance Request")
 
     eq = get_equipment()
-    eq_map = dict(zip(eq["name"], eq["id"]))
+    eq_map = dict(zip(eq["name"], eq["id"].astype(int)))
 
     subject = st.text_input("Issue / Subject")
     eq_name = st.selectbox("Equipment", eq_map.keys())
@@ -340,7 +424,7 @@ elif menu == "Create Request":
         VALUES (?, ?, ?, ?, ?, 'New', ?, ?)
         """, (
             subject,
-            eq_row["id"],
+            int (eq_row["id"]),
             eq_row["team"],
             eq_row["technician"],
             req_type,
@@ -416,29 +500,64 @@ elif menu == "Kanban Board":
 elif menu == "Calendar View":
     st.header("📅 Preventive Maintenance Calendar")
 
-    selected = st.date_input("Select Date")
+    view = st.radio("View Mode", ["Daily", "Weekly", "Monthly"], horizontal=True)
 
-    # df = pd.read_sql("""
-    # SELECT r.subject, e.name AS equipment, r.technician
-    # FROM requests r
-    # JOIN equipment e ON r.equipment_id = e.id
-    # WHERE r.request_type='Preventive' AND r.scheduled_date=?
-    # """, conn, params=(str(selected),))
+    today = date.today()
 
+    # ---------------- DAILY ---------------- #
+    if view == "Daily":
+        selected = st.date_input("Select Date", today)
 
-    df = pd.read_sql("""
-    SELECT r.subject, e.name AS equipment, r.technician, r.scheduled_date
-    FROM requests r
-    JOIN equipment e ON r.equipment_id = e.id
-    WHERE r.request_type='Preventive'
-    ORDER BY r.scheduled_date
-    """, conn)
+        df = pd.read_sql("""
+        SELECT r.subject, e.name AS equipment, r.technician, r.scheduled_date
+        FROM requests r
+        JOIN equipment e ON r.equipment_id = e.id
+        WHERE r.request_type='Preventive'
+          AND r.scheduled_date = ?
+        """, conn, params=(str(selected),))
 
+    # ---------------- WEEKLY ---------------- #
+    elif view == "Weekly":
+        start = st.date_input("Week Start Date", today)
 
-    # st.dataframe(pd.read_sql("SELECT * FROM requests", conn))
+        end = start + pd.Timedelta(days=6)
 
+        df = pd.read_sql("""
+        SELECT r.subject, e.name AS equipment, r.technician, r.scheduled_date
+        FROM requests r
+        JOIN equipment e ON r.equipment_id = e.id
+        WHERE r.request_type='Preventive'
+          AND r.scheduled_date BETWEEN ? AND ?
+        ORDER BY r.scheduled_date
+        """, conn, params=(str(start), str(end)))
 
+        st.caption(f"Showing week: {start} → {end}")
+
+    # ---------------- MONTHLY ---------------- #
+    else:
+        year = st.selectbox("Year", range(today.year - 1, today.year + 3))
+        month = st.selectbox("Month", range(1, 13))
+
+        start = date(year, month, 1)
+        if month == 12:
+            end = date(year + 1, 1, 1)
+        else:
+            end = date(year, month + 1, 1)
+
+        df = pd.read_sql("""
+        SELECT r.subject, e.name AS equipment, r.technician, r.scheduled_date
+        FROM requests r
+        JOIN equipment e ON r.equipment_id = e.id
+        WHERE r.request_type='Preventive'
+          AND r.scheduled_date >= ?
+          AND r.scheduled_date < ?
+        ORDER BY r.scheduled_date
+        """, conn, params=(str(start), str(end)))
+
+        st.caption(f"Showing month: {start.strftime('%B %Y')}")
+
+    # ---------------- DISPLAY ---------------- #
     if df.empty:
         st.info("No preventive maintenance scheduled.")
     else:
-        st.dataframe(df)
+        st.dataframe(df, use_container_width=True)
