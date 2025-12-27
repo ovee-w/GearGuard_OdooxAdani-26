@@ -56,6 +56,7 @@ def init_db():
     )
     """)
 
+
     conn.commit()
 
 init_db()
@@ -78,16 +79,157 @@ def get_technicians(team):
 st.set_page_config("GearGuard", layout="wide")
 st.title("🔧 GearGuard – The Ultimate Maintenance Tracker")
 
+if "redirect_to" in st.session_state:
+    st.session_state["nav"] = st.session_state.pop("redirect_to")
+
 menu = st.sidebar.radio(
     "Navigation",
-    ["Equipment", "Teams", "Create Request", "Kanban Board", "Calendar View"]
+    ["Dashboard", "Equipment", "Teams", "Create Request", "Kanban Board", "Calendar View"], key="nav"
 )
 
 # =========================================================
 # EQUIPMENT MODULE
 # =========================================================
+EMPTY_STATE_MESSAGES = {
+    "New": "🎉 No new issues right now! Everything is running smoothly.",
+    "In Progress": "💪 No ongoing work at the moment. The team is all caught up!",
+    "Repaired": "✨ No repaired items here — looks like nothing needed fixing today.",
+    "Scrap": "🧹 No scrapped equipment found. That’s a good sign!"
+}
 
-if menu == "Equipment":
+if menu == "Dashboard":
+    st.header("Dashboard")
+    df = pd.read_sql("""
+    SELECT
+        r.id,
+        r.subject,
+        COALESCE(e.name, 'Unknown') AS equipment,
+        r.team,
+        r.technician,
+        COALESCE(r.status, 'New') AS status,
+        r.request_type,
+        r.scheduled_date
+    FROM requests r
+    LEFT JOIN equipment e ON r.equipment_id = e.id
+    WHERE COALESCE(r.status, 'New') != 'Repaired'
+    ORDER BY r.created_at DESC
+    """, conn)
+    colA, colB = st.columns([5, 1])
+    with colB:
+        if st.button("➕ Create Request"):
+            st.session_state["redirect_to"] = "Create Request"
+            st.rerun()
+         
+    st.subheader("🔎 Filter Requests")
+    f1, f2, f3, f4, f5, f6 = st.columns(6)
+
+    with f1:
+        team_f = st.multiselect(
+            "Team",
+            sorted(df["team"].dropna().unique()),
+            key="filter_team"
+        )
+
+    with f2:
+        tech_f = st.multiselect(
+            "Technician",
+            sorted(df["technician"].dropna().unique()),
+            key="filter_technician"
+        )
+
+    with f3:
+        STATUS_OPTIONS = ["New", "In Progress", "Repaired", "Scrap"]
+        status_f = st.multiselect(
+            "Status",
+            options=STATUS_OPTIONS,
+            key="filter_status"
+        )
+
+    with f4:
+        type_f = st.multiselect(
+            "Type",
+            sorted(df["request_type"].dropna().unique()),
+            key="filter_type"
+        )
+
+    with f5:
+        equip_f = st.multiselect(
+            "Equipment",
+            sorted(df["equipment"].dropna().unique()),
+            key="filter_equipment"
+        )
+
+    with f6:
+        overdue_only = st.checkbox(
+            "Overdue Only",
+            key="filter_overdue"
+        )
+
+    filtered_df = df.copy()
+    if team_f:
+        filtered_df = filtered_df[filtered_df["team"].isin(team_f)]
+
+    if tech_f:
+        filtered_df = filtered_df[filtered_df["technician"].isin(tech_f)]
+
+    if status_f:
+        filtered_df = filtered_df[filtered_df["status"].isin(status_f)]
+
+    if type_f:
+        filtered_df = filtered_df[filtered_df["request_type"].isin(type_f)]
+
+    if equip_f:
+        filtered_df = filtered_df[filtered_df["equipment"].isin(equip_f)]
+
+    if overdue_only:
+        filtered_df = filtered_df[
+            filtered_df["scheduled_date"].notna() &
+            (filtered_df["scheduled_date"] < str(date.today()))
+        ]
+    
+    if filtered_df.empty:
+
+        # Case 1: Exactly ONE status filter selected
+        if status_f and len(status_f) == 1:
+            msg = EMPTY_STATE_MESSAGES.get(
+                status_f[0],
+                "🎉 All clear! No requests match your filters."
+            )
+            st.success(msg)
+
+        # Case 2: Multiple status filters selected
+        elif status_f and len(status_f) > 1:
+            st.success(
+                "🎯 You’re all caught up across these stages! Nothing pending here."
+            )
+
+        # Case 3: Overdue filter active
+        elif overdue_only:
+            st.success(
+                "⏰ No overdue tasks — amazing job staying ahead!"
+            )
+
+        # Case 4: Other filters applied (team, tech, equipment, etc.)
+        elif team_f or tech_f or type_f or equip_f:
+            st.info(
+                "🔍 No requests match these filters. Try adjusting them to explore more."
+            )
+
+        # Case 5: No filters at all (true empty dashboard)
+        else:
+            st.success(
+                "🌈 Your maintenance board is clear! Enjoy the calm while it lasts 😄"
+            )
+        st.caption("Pro tip: Preventive maintenance today avoids breakdowns tomorrow.")
+        st.stop()
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True
+    )
+
+elif menu == "Equipment":
     st.header("🏭 Equipment Management")
 
     with st.form("add_equipment"):
